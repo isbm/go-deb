@@ -210,6 +210,7 @@ type PackageFile struct {
 	postrm   string
 
 	checksum *Checksum
+	control  *ControlFile
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -219,6 +220,7 @@ type PackageFile struct {
 func NewPackageFile() *PackageFile {
 	pf := new(PackageFile)
 	pf.fileChecksums = make(map[string]string)
+	pf.control = NewControlFile()
 
 	return pf
 }
@@ -262,9 +264,17 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 
 // Parse control file
 func (c *PackageFile) parseControlFile(data []byte) {
+	var line string
 	scn := bufio.NewScanner(strings.NewReader(string(data)))
 	for scn.Scan() {
-		fmt.Println("...", scn.Text())
+		// Single field values
+		line = scn.Text()
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			fmt.Println("...", line) // multi- or folded- line.
+		} else {
+			field := strings.SplitN(line, ":", 2)
+			c.control.setStringField(field[0], field[1])
+		}
 	}
 }
 
@@ -310,4 +320,9 @@ func (c *PackageFile) GetFileChecksum(path string) string {
 // GetFileChecksum returns file checksum by relative path
 func (c *PackageFile) GetPackageChecksum() *Checksum {
 	return c.checksum
+}
+
+// GetFileChecksum returns file checksum by relative path
+func (c *PackageFile) ControlFile() *ControlFile {
+	return c.control
 }
