@@ -1,8 +1,8 @@
 # go-deb
 A native implementation of the Debian specification in Go,
 which is very much inspired by [go-rpm](https://github.com/cavaliercoder/go-rpm).
-The `go-deb` is trying to almist replicate `go-rpm` in order to provide
-more or less common API.
+The `go-deb` is trying to replicate `go-rpm` as close as possible in order to provide
+more or less common API. The difference between RPM and Dpkg, however, inevitable.
 
 	$ go get github.com/isbm/go-deb
 
