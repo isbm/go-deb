@@ -2,30 +2,24 @@ package deb
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"github.com/blakesmith/ar"
+	"hash"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
-
-type PackageFile struct {
-	path     string
-	fileSize uint64
-	fileTime time.Time
-
-	preinst  string
-	prerm    string
-	postinst string
-	postrm   string
-
-	files []FileInfo
-}
 
 func OpenPackageFile(uri string) (*PackageFile, error) {
 	var pf *PackageFile
@@ -55,8 +49,7 @@ func openPackagePath(path string) (*PackageFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.path = path
-	p.fileSize = uint64(fi.Size())
+	p.setPath(path).fileSize = uint64(fi.Size())
 	p.fileTime = fi.ModTime()
 	return p, nil
 }
@@ -73,8 +66,7 @@ func openPackageURL(path string) (*PackageFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.path = path
-	p.fileSize = uint64(resp.ContentLength)
+	p.setPath(path).fileSize = uint64(resp.ContentLength)
 	if lm := resp.Header.Get("Last-Modified"); len(lm) > 0 {
 		t, _ := time.Parse(time.RFC1123, lm) // ignore malformed timestamps
 		p.fileTime = t
@@ -83,7 +75,7 @@ func openPackageURL(path string) (*PackageFile, error) {
 }
 
 func ReadPackageFile(r io.Reader) (*PackageFile, error) {
-	p := &PackageFile{}
+	p := NewPackageFile()
 
 	arFile := ar.NewReader(r)
 	for {
@@ -100,7 +92,7 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 				var trbuf bytes.Buffer
 
 				io.Copy(&gzbuf, arFile)
-				p.ungz(&trbuf, gzbuf.Bytes())
+				p.unGzip(&trbuf, gzbuf.Bytes())
 
 				tr := tar.NewReader(&trbuf)
 				for {
@@ -124,6 +116,10 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.preinst = string(gzbuf.Bytes())
 						case "prerm":
 							p.prerm = string(gzbuf.Bytes())
+						case "md5sums":
+							p.parseMd5Sums(gzbuf.Bytes())
+						case "control":
+							p.parseControlFile(gzbuf.Bytes())
 						default:
 							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
 							fmt.Println(string(gzbuf.Bytes()))
@@ -140,8 +136,103 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 	return p, nil
 }
 
-// ungz decompresses compressed Gzip data array
-func (c *PackageFile) ungz(writer io.Writer, data []byte) error {
+// Checksum object computes and returns the SHA256, SHA1 and MD5 checksums
+// encoded in hexadecimal) of the package file.
+//
+// Checksum reopens the package using the file path that was given via
+// OpenPackageFile.
+type Checksum struct {
+	path string
+}
+
+// Constructor
+func NewChecksum(path string) *Checksum {
+	cs := new(Checksum)
+	cs.path = path
+	return cs
+}
+
+// Compute checksum for the given hash
+func (cs *Checksum) compute(csType hash.Hash) (string, error) {
+	if cs.path == "" {
+		return "", fmt.Errorf("No path has been defined")
+	}
+
+	f, err := os.Open(cs.path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(csType, f); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(csType.Sum(nil)), nil
+}
+
+// SHA256 checksum
+func (cs *Checksum) SHA256() string {
+	sum, err := cs.compute(sha256.New())
+	if err != nil {
+		panic(err)
+	}
+	return sum
+}
+
+// SHA1 checksum
+func (cs *Checksum) SHA1() string {
+	sum, err := cs.compute(sha1.New())
+	if err != nil {
+		panic(err)
+	}
+	return sum
+}
+
+// MD5 checksum
+func (cs *Checksum) MD5() string {
+	sum, err := cs.compute(md5.New())
+	if err != nil {
+		panic(err)
+	}
+	return sum
+}
+
+// PackageFile object
+type PackageFile struct {
+	path     string
+	fileSize uint64
+	fileTime time.Time
+
+	preinst  string
+	prerm    string
+	postinst string
+	postrm   string
+
+	checksum *Checksum
+
+	files         []FileInfo
+	fileChecksums map[string]string
+}
+
+// Constructor
+func NewPackageFile() *PackageFile {
+	pf := new(PackageFile)
+	pf.fileChecksums = make(map[string]string)
+
+	return pf
+}
+
+// Set path to the file
+func (c *PackageFile) setPath(path string) *PackageFile {
+	c.path = path
+	c.checksum = NewChecksum(c.path)
+
+	return c
+}
+
+// unGzip decompresses compressed Gzip data array
+func (c *PackageFile) unGzip(writer io.Writer, data []byte) error {
 	gzread, err := gzip.NewReader(bytes.NewBuffer(data))
 	if err != nil {
 		panic(err)
@@ -157,13 +248,46 @@ func (c *PackageFile) ungz(writer io.Writer, data []byte) error {
 	return err
 }
 
-// parseControlFile function parses control file to the PackageFile structure fields
-func (c *PackageFile) parseControlFile(cfdata string) error {
-	return nil
+// Parse MD5 checksums file
+func (c *PackageFile) parseMd5Sums(data []byte) {
+	var sfx = regexp.MustCompile(`\s+|\t+`)
+	scn := bufio.NewScanner(strings.NewReader(string(data)))
+	for scn.Scan() {
+		csF := strings.Split(sfx.ReplaceAllString(scn.Text(), " "), " ")
+		if len(csF) == 2 && len(csF[0]) == 0x20 {
+			c.fileChecksums[csF[0]] = csF[1]
+		}
+	}
+}
+
+// Parse control file
+func (c *PackageFile) parseControlFile(data []byte) {
+	scn := bufio.NewScanner(strings.NewReader(string(data)))
+	for scn.Scan() {
+		fmt.Println("...", scn.Text())
+	}
+}
+
+// Path returns the path which was given to open a package file if it was opened
+// with OpenPackageFile.
+func (c *PackageFile) Path() string {
+	return c.path
 }
 
 func (c *PackageFile) PreInstallScript() string {
 	return c.preinst
+}
+
+// FileTime returns the time at which the Debian package file was last modified if
+// it was opened with OpenPackageFile.
+func (c *PackageFile) FileTime() time.Time {
+	return c.fileTime
+}
+
+// FileSize returns the size of the package file in bytes if it was opened with
+// OpenPackageFile.
+func (c *PackageFile) FileSize() uint64 {
+	return c.fileSize
 }
 
 func (c *PackageFile) PostInstallScript() string {
@@ -176,4 +300,14 @@ func (c *PackageFile) PreUninstallScript() string {
 
 func (c *PackageFile) PostUninstallScript() string {
 	return c.postrm
+}
+
+// GetFileChecksum returns file checksum by relative path
+func (c *PackageFile) GetFileChecksum(path string) string {
+	return c.fileChecksums[path]
+}
+
+// GetFileChecksum returns file checksum by relative path
+func (c *PackageFile) GetPackageChecksum() *Checksum {
+	return c.checksum
 }
