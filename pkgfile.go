@@ -122,6 +122,8 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.parseControlFile(gzbuf.Bytes())
 						case "symbols":
 							p.parseSymbolsFile(gzbuf.Bytes())
+						case "shlibs":
+							p.parseSharedLibsFile(gzbuf.Bytes())
 						default:
 							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
 							fmt.Println(string(gzbuf.Bytes()))
@@ -214,6 +216,7 @@ type PackageFile struct {
 	checksum *Checksum
 	control  *ControlFile
 	symbols  *SymbolsFile
+	shlibs   *SharedLibsFile
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -225,6 +228,7 @@ func NewPackageFile() *PackageFile {
 	pf.fileChecksums = make(map[string]string)
 	pf.control = NewControlFile()
 	pf.symbols = NewSymbolsFile()
+	pf.shlibs = NewSharedLibsFile()
 
 	return pf
 }
@@ -266,8 +270,14 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 	}
 }
 
+// Parse symbols
 func (c *PackageFile) parseSymbolsFile(data []byte) {
 	c.symbols.parse(data)
+}
+
+// Parse shlibs
+func (c *PackageFile) parseSharedLibsFile(data []byte) {
+	c.shlibs.parse(data)
 }
 
 // Parse control file
@@ -346,4 +356,9 @@ func (c *PackageFile) ControlFile() *ControlFile {
 // SymbolsFile returns parsed symbols file data
 func (c *PackageFile) SymbolsFile() *SymbolsFile {
 	return c.symbols
+}
+
+// SharedLibsFile returns parsed shlibs file data (an alternative system to symbols)
+func (c *PackageFile) SharedLibsFile() *SharedLibsFile {
+	return c.shlibs
 }
