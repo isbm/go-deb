@@ -2,7 +2,6 @@ package deb
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -46,7 +45,7 @@ func (tf *TriggerFile) parse(data []byte) error {
 				t.directive, t.name = dn[0], dn[1]
 				tf.triggers = append(tf.triggers, *t)
 			} else {
-				return errors.New(fmt.Sprintf("Could not parse name and directive in '%v' line.", line))
+				return fmt.Errorf("Could not parse name and directive in '%v' line.", line)
 			}
 		}
 	}
