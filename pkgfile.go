@@ -128,7 +128,7 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 				}
 
 			} else {
-				fmt.Println(">>", header.Name)
+				fmt.Println(">> AR FILENAME:", header.Name)
 			}
 		}
 	}
@@ -265,15 +265,23 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 // Parse control file
 func (c *PackageFile) parseControlFile(data []byte) {
 	var line string
+	var namedata []string
+	var currentName string
+
 	scn := bufio.NewScanner(strings.NewReader(string(data)))
 	for scn.Scan() {
 		// Single field values
 		line = scn.Text()
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			fmt.Println("...", line) // multi- or folded- line.
+			c.control.addToField(currentName, line)
 		} else {
-			field := strings.SplitN(line, ":", 2)
-			c.control.setStringField(field[0], field[1])
+			namedata = strings.SplitN(line, ":", 2)
+			currentName = namedata[0]
+			c.control.setField(namedata...)
 		}
 	}
 }
