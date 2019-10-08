@@ -333,12 +333,17 @@ func (c *PackageFile) GetFileChecksum(path string) string {
 	return c.fileChecksums[path]
 }
 
-// GetFileChecksum returns file checksum by relative path
+// GetPackageChecksum returns checksum of the package itself
 func (c *PackageFile) GetPackageChecksum() *Checksum {
 	return c.checksum
 }
 
-// GetFileChecksum returns file checksum by relative path
+// ControlFile returns parsed data of the package's control file
 func (c *PackageFile) ControlFile() *ControlFile {
 	return c.control
+}
+
+// SymbolsFile returns parsed symbols file data
+func (c *PackageFile) SymbolsFile() *SymbolsFile {
+	return c.symbols
 }
