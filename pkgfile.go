@@ -126,6 +126,10 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.parseSharedLibsFile(gzbuf.Bytes())
 						case "triggers":
 							p.parseTriggersFile(gzbuf.Bytes())
+						case "templates":
+							// If it is needed
+						case "config":
+							// Old packaging style
 						default:
 							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
 							fmt.Println(string(gzbuf.Bytes()))
