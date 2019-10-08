@@ -124,6 +124,8 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.parseSymbolsFile(gzbuf.Bytes())
 						case "shlibs":
 							p.parseSharedLibsFile(gzbuf.Bytes())
+						case "triggers":
+							p.parseTriggersFile(gzbuf.Bytes())
 						default:
 							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
 							fmt.Println(string(gzbuf.Bytes()))
@@ -217,6 +219,7 @@ type PackageFile struct {
 	control  *ControlFile
 	symbols  *SymbolsFile
 	shlibs   *SharedLibsFile
+	triggers *TriggerFile
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -229,6 +232,7 @@ func NewPackageFile() *PackageFile {
 	pf.control = NewControlFile()
 	pf.symbols = NewSymbolsFile()
 	pf.shlibs = NewSharedLibsFile()
+	pf.triggers = NewTriggerFile()
 
 	return pf
 }
@@ -268,6 +272,11 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 			c.fileChecksums[csF[0]] = csF[1]
 		}
 	}
+}
+
+// Parse Triggers
+func (c *PackageFile) parseTriggersFile(data []byte) {
+	c.triggers.parse(data)
 }
 
 // Parse symbols
@@ -361,4 +370,9 @@ func (c *PackageFile) SymbolsFile() *SymbolsFile {
 // SharedLibsFile returns parsed shlibs file data (an alternative system to symbols)
 func (c *PackageFile) SharedLibsFile() *SharedLibsFile {
 	return c.shlibs
+}
+
+// TriggersFile returns parsed triggers file data.
+func (c *PackageFile) TriggersFile() *TriggerFile {
+	return c.triggers
 }
