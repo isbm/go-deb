@@ -56,7 +56,7 @@ func (shlf *SharedLibsFile) parse(data []byte) error {
 	scn := bufio.NewScanner(strings.NewReader(string(data)))
 	for scn.Scan() {
 		line = strings.TrimSpace(scn.Text())
-		if line != "" {
+		if line != "" && !strings.HasPrefix(line, "#") {
 			shl := NewSharedLibrary()
 			fe := strings.SplitN(line, " ", 2)
 			if strings.HasSuffix(fe[0], ":") {
