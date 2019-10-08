@@ -120,6 +120,8 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.parseMd5Sums(gzbuf.Bytes())
 						case "control":
 							p.parseControlFile(gzbuf.Bytes())
+						case "symbols":
+							p.parseSymbolsFile(gzbuf.Bytes())
 						default:
 							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
 							fmt.Println(string(gzbuf.Bytes()))
@@ -211,6 +213,7 @@ type PackageFile struct {
 
 	checksum *Checksum
 	control  *ControlFile
+	symbols  *SymbolsFile
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -221,6 +224,7 @@ func NewPackageFile() *PackageFile {
 	pf := new(PackageFile)
 	pf.fileChecksums = make(map[string]string)
 	pf.control = NewControlFile()
+	pf.symbols = NewSymbolsFile()
 
 	return pf
 }
@@ -260,6 +264,10 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 			c.fileChecksums[csF[0]] = csF[1]
 		}
 	}
+}
+
+func (c *PackageFile) parseSymbolsFile(data []byte) {
+	c.symbols.parse(data)
 }
 
 // Parse control file
