@@ -126,6 +126,8 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 							p.parseSharedLibsFile(gzbuf.Bytes())
 						case "triggers":
 							p.parseTriggersFile(gzbuf.Bytes())
+						case "conffiles":
+							p.parseConffilesFile(gzbuf.Bytes())
 						case "templates":
 							// If it is needed
 						case "config":
@@ -219,11 +221,12 @@ type PackageFile struct {
 	postinst string
 	postrm   string
 
-	checksum *Checksum
-	control  *ControlFile
-	symbols  *SymbolsFile
-	shlibs   *SharedLibsFile
-	triggers *TriggerFile
+	checksum  *Checksum
+	control   *ControlFile
+	symbols   *SymbolsFile
+	shlibs    *SharedLibsFile
+	triggers  *TriggerFile
+	conffiles *CfgFilesFile
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -237,6 +240,7 @@ func NewPackageFile() *PackageFile {
 	pf.symbols = NewSymbolsFile()
 	pf.shlibs = NewSharedLibsFile()
 	pf.triggers = NewTriggerFile()
+	pf.conffiles = NewCfgFilesFiles()
 
 	return pf
 }
@@ -276,6 +280,11 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 			c.fileChecksums[csF[0]] = csF[1]
 		}
 	}
+}
+
+// Parse Conffiles
+func (c *PackageFile) parseConffilesFile(data []byte) {
+	c.conffiles.parse(data)
 }
 
 // Parse Triggers
@@ -379,4 +388,9 @@ func (c *PackageFile) SharedLibsFile() *SharedLibsFile {
 // TriggersFile returns parsed triggers file data.
 func (c *PackageFile) TriggersFile() *TriggerFile {
 	return c.triggers
+}
+
+// ConffilesFile returns parsed triggers file data.
+func (c *PackageFile) ConffilesFile() *CfgFilesFile {
+	return c.conffiles
 }
