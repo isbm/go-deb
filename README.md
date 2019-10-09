@@ -16,7 +16,6 @@ features such as:
 * Reading of modern and legacy Debian package file formats
 * Reading, creating and updating modern and legacy Dpkg repository metadata
 
-_NOTE: below is where project is aiming. This doesn't work yet:_
 
 ```go
 package main
