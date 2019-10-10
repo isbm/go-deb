@@ -46,7 +46,7 @@ func openPackagePath(path string) (*PackageFile, error) {
 		return nil, err
 	}
 
-	p, err := ReadPackageFile(f)
+	p, err := NewPackageFileReader(f).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func openPackageURL(path string) (*PackageFile, error) {
 	}
 	defer resp.Body.Close()
 
-	p, err := ReadPackageFile(resp.Body)
+	p, err := NewPackageFileReader(resp.Body).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -75,12 +75,94 @@ func openPackageURL(path string) (*PackageFile, error) {
 	return p, nil
 }
 
-func ReadPackageFile(r io.Reader) (*PackageFile, error) {
-	p := NewPackageFile()
+// PackageFileReader object
+type PackageFileReader struct {
+	reader io.Reader
+	pkg    *PackageFile
+	arcnt  *ar.Reader
+}
 
-	arFile := ar.NewReader(r)
+// PackageFileReader constructor
+func NewPackageFileReader(reader io.Reader) *PackageFileReader {
+	pfr := new(PackageFileReader)
+	pfr.reader = reader
+	pfr.pkg = NewPackageFile()
+	pfr.arcnt = ar.NewReader(pfr.reader)
+
+	return pfr
+}
+
+// Error checker
+func (pfr PackageFileReader) checkErr(err error) bool {
+	if err != nil {
+		panic(err) // Should be logging instead
+	}
+	return err == nil
+}
+
+// Read control file, compressed with tar and gzip or xz
+func (pfr *PackageFileReader) processControlFile(header ar.Header) {
+	var gzbuf bytes.Buffer
+	var trbuf bytes.Buffer
+
+	_, cperr := io.Copy(&gzbuf, pfr.arcnt)
+	pfr.checkErr(cperr)
+
+	if strings.HasSuffix(header.Name, "gz") {
+		pfr.checkErr(pfr.pkg.unGzip(&trbuf, gzbuf.Bytes()))
+	} else {
+		pfr.checkErr(pfr.pkg.unXz(&trbuf, gzbuf.Bytes()))
+	}
+
+	tr := tar.NewReader(&trbuf)
 	for {
-		header, err := arFile.Next()
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if pfr.checkErr(err) && hdr.Typeflag == tar.TypeReg {
+			gzbuf.Reset()
+			_, err = io.Copy(&gzbuf, tr)
+			pfr.checkErr(err)
+
+			switch hdr.Name[2:] {
+			case "postinst":
+				pfr.pkg.postinst = gzbuf.String()
+			case "postrm":
+				pfr.pkg.postrm = gzbuf.String()
+			case "preinst":
+				pfr.pkg.preinst = gzbuf.String()
+			case "prerm":
+				pfr.pkg.prerm = gzbuf.String()
+			case "md5sums":
+				pfr.pkg.parseMd5Sums(gzbuf.Bytes())
+			case "control":
+				pfr.pkg.parseControlFile(gzbuf.Bytes())
+			case "symbols":
+				pfr.pkg.parseSymbolsFile(gzbuf.Bytes())
+			case "shlibs":
+				pfr.pkg.parseSharedLibsFile(gzbuf.Bytes())
+			case "triggers":
+				pfr.pkg.parseTriggersFile(gzbuf.Bytes())
+			case "conffiles":
+				pfr.pkg.parseConffilesFile(gzbuf.Bytes())
+			case "templates":
+				// If it is needed
+			case "config":
+				// Old packaging style
+			default:
+				fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
+				fmt.Println(gzbuf.String())
+			}
+		}
+	}
+
+}
+
+// Read Debian package data from the stream
+func (pfr *PackageFileReader) Read() (*PackageFile, error) {
+	for {
+		header, err := pfr.arcnt.Next()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -89,69 +171,14 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 			}
 		} else {
 			if header.Name == "control.tar.gz" || header.Name == "control.tar.xz" {
-				var gzbuf bytes.Buffer
-				var trbuf bytes.Buffer
-
-				io.Copy(&gzbuf, arFile)
-
-				if strings.HasSuffix(header.Name, "gz") {
-					p.unGzip(&trbuf, gzbuf.Bytes())
-				} else {
-					p.unXz(&trbuf, gzbuf.Bytes())
-				}
-
-				tr := tar.NewReader(&trbuf)
-				for {
-					hdr, err := tr.Next()
-					if err == io.EOF {
-						break
-					}
-					if err != nil {
-						panic(err)
-					}
-					if hdr.Typeflag == tar.TypeReg {
-						gzbuf.Reset()
-						io.Copy(&gzbuf, tr)
-
-						switch hdr.Name[2:] {
-						case "postinst":
-							p.postinst = string(gzbuf.Bytes())
-						case "postrm":
-							p.postrm = string(gzbuf.Bytes())
-						case "preinst":
-							p.preinst = string(gzbuf.Bytes())
-						case "prerm":
-							p.prerm = string(gzbuf.Bytes())
-						case "md5sums":
-							p.parseMd5Sums(gzbuf.Bytes())
-						case "control":
-							p.parseControlFile(gzbuf.Bytes())
-						case "symbols":
-							p.parseSymbolsFile(gzbuf.Bytes())
-						case "shlibs":
-							p.parseSharedLibsFile(gzbuf.Bytes())
-						case "triggers":
-							p.parseTriggersFile(gzbuf.Bytes())
-						case "conffiles":
-							p.parseConffilesFile(gzbuf.Bytes())
-						case "templates":
-							// If it is needed
-						case "config":
-							// Old packaging style
-						default:
-							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
-							fmt.Println(string(gzbuf.Bytes()))
-						}
-					}
-				}
-
+				pfr.processControlFile(*header)
 			} else {
-				fmt.Println(">> AR FILENAME:", header.Name)
+				fmt.Println(">> AR (Reader) FILENAME:", header.Name)
 			}
 		}
 	}
 
-	return p, nil
+	return pfr.pkg, nil
 }
 
 // Checksum object computes and returns the SHA256, SHA1 and MD5 checksums
