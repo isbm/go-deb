@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/blakesmith/ar"
+	"github.com/ulikunitz/xz"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -87,12 +88,17 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 				panic(err)
 			}
 		} else {
-			if header.Name == "control.tar.gz" {
+			if header.Name == "control.tar.gz" || header.Name == "control.tar.xz" {
 				var gzbuf bytes.Buffer
 				var trbuf bytes.Buffer
 
 				io.Copy(&gzbuf, arFile)
-				p.unGzip(&trbuf, gzbuf.Bytes())
+
+				if strings.HasSuffix(header.Name, "gz") {
+					p.unGzip(&trbuf, gzbuf.Bytes())
+				} else {
+					p.unXz(&trbuf, gzbuf.Bytes())
+				}
 
 				tr := tar.NewReader(&trbuf)
 				for {
@@ -251,6 +257,21 @@ func (c *PackageFile) setPath(path string) *PackageFile {
 	c.checksum = NewChecksum(c.path)
 
 	return c
+}
+
+// unXz decompresses Lempel-Ziv-Markow data
+func (c *PackageFile) unXz(writer io.Writer, data []byte) error {
+	xzread, err := xz.NewReader(bytes.NewBuffer(data))
+	if err != nil {
+		panic(err)
+	}
+
+	data, err = ioutil.ReadAll(xzread)
+	if err == nil {
+		writer.Write(data)
+	}
+
+	return err
 }
 
 // unGzip decompresses compressed Gzip data array
