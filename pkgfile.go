@@ -100,8 +100,7 @@ func (pfr PackageFileReader) checkErr(err error) bool {
 	return err == nil
 }
 
-// Read control file, compressed with tar and gzip or xz
-func (pfr *PackageFileReader) processControlFile(header ar.Header) {
+func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
 	var gzbuf bytes.Buffer
 	var trbuf bytes.Buffer
 
@@ -114,45 +113,51 @@ func (pfr *PackageFileReader) processControlFile(header ar.Header) {
 		pfr.checkErr(pfr.pkg.unXz(&trbuf, gzbuf.Bytes()))
 	}
 
-	tr := tar.NewReader(&trbuf)
+	return tar.NewReader(&trbuf)
+}
+
+// Read control file, compressed with tar and gzip or xz
+func (pfr *PackageFileReader) processControlFile(header ar.Header) {
+	var databuf bytes.Buffer
+	tarFile := pfr.decompressTar(header)
 	for {
-		hdr, err := tr.Next()
+		hdr, err := tarFile.Next()
 		if err == io.EOF {
 			break
 		}
 		if pfr.checkErr(err) && hdr.Typeflag == tar.TypeReg {
-			gzbuf.Reset()
-			_, err = io.Copy(&gzbuf, tr)
+			databuf.Reset()
+			_, err = io.Copy(&databuf, tarFile)
 			pfr.checkErr(err)
 
 			switch hdr.Name[2:] {
 			case "postinst":
-				pfr.pkg.postinst = gzbuf.String()
+				pfr.pkg.postinst = databuf.String()
 			case "postrm":
-				pfr.pkg.postrm = gzbuf.String()
+				pfr.pkg.postrm = databuf.String()
 			case "preinst":
-				pfr.pkg.preinst = gzbuf.String()
+				pfr.pkg.preinst = databuf.String()
 			case "prerm":
-				pfr.pkg.prerm = gzbuf.String()
+				pfr.pkg.prerm = databuf.String()
 			case "md5sums":
-				pfr.pkg.parseMd5Sums(gzbuf.Bytes())
+				pfr.pkg.parseMd5Sums(databuf.Bytes())
 			case "control":
-				pfr.pkg.parseControlFile(gzbuf.Bytes())
+				pfr.pkg.parseControlFile(databuf.Bytes())
 			case "symbols":
-				pfr.pkg.parseSymbolsFile(gzbuf.Bytes())
+				pfr.pkg.parseSymbolsFile(databuf.Bytes())
 			case "shlibs":
-				pfr.pkg.parseSharedLibsFile(gzbuf.Bytes())
+				pfr.pkg.parseSharedLibsFile(databuf.Bytes())
 			case "triggers":
-				pfr.pkg.parseTriggersFile(gzbuf.Bytes())
+				pfr.pkg.parseTriggersFile(databuf.Bytes())
 			case "conffiles":
-				pfr.pkg.parseConffilesFile(gzbuf.Bytes())
+				pfr.pkg.parseConffilesFile(databuf.Bytes())
 			case "templates":
 				// If it is needed
 			case "config":
 				// Old packaging style
 			default:
 				fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
-				fmt.Println(gzbuf.String())
+				fmt.Println(databuf.String())
 			}
 		}
 	}
