@@ -11,7 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/blakesmith/ar"
-	"github.com/ulikunitz/xz"
+	"github.com/xi2/xz"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -100,6 +100,7 @@ func (pfr PackageFileReader) checkErr(err error) bool {
 	return err == nil
 }
 
+// Decompress Tar data from gz or xz
 func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
 	var gzbuf bytes.Buffer
 	var trbuf bytes.Buffer
@@ -293,7 +294,7 @@ func (c *PackageFile) setPath(path string) *PackageFile {
 
 // unXz decompresses Lempel-Ziv-Markow data
 func (c *PackageFile) unXz(writer io.Writer, data []byte) error {
-	xzread, err := xz.NewReader(bytes.NewBuffer(data))
+	xzread, err := xz.NewReader(bytes.NewBuffer(data), 0)
 	if err != nil {
 		panic(err)
 	}
