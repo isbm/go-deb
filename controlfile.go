@@ -152,7 +152,7 @@ func (cf *ControlFile) setStringField(name string, data string) {
 	case "section":
 		cf.section = data
 	case "priority":
-		cf.section = data
+		cf.priority = data
 	case "original-maintainer":
 		cf.originalMaintainer = data
 	case "version":
@@ -207,6 +207,11 @@ func (cf *ControlFile) InstalledSize() int {
 //
 func (cf *ControlFile) Section() string {
 	return cf.section
+}
+
+//
+func (cf *ControlFile) Priority() string {
+	return cf.priority
 }
 
 //
