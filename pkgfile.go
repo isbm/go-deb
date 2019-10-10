@@ -19,22 +19,24 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
-func OpenPackageFile(uri string) (*PackageFile, error) {
+// OpenPackageFile from URI string.
+func OpenPackageFile(uri string, metaonly bool) (*PackageFile, error) {
 	var pf *PackageFile
 	var err error
 	if strings.Contains(uri, "://") && strings.HasPrefix(strings.ToLower(uri), "http") {
-		pf, err = openPackageURL(uri)
+		pf, err = openPackageURL(uri, metaonly)
 	} else {
-		pf, err = openPackagePath(uri)
+		pf, err = openPackagePath(uri, metaonly)
 	}
 
 	return pf, err
 }
 
-func openPackagePath(path string) (*PackageFile, error) {
+func openPackagePath(path string, metaonly bool) (*PackageFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -46,7 +48,7 @@ func openPackagePath(path string) (*PackageFile, error) {
 		return nil, err
 	}
 
-	p, err := NewPackageFileReader(f).Read()
+	p, err := NewPackageFileReader(f).SetMetaonly(metaonly).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -56,14 +58,14 @@ func openPackagePath(path string) (*PackageFile, error) {
 }
 
 // openPackageURL reads package info from a HTTP URL
-func openPackageURL(path string) (*PackageFile, error) {
+func openPackageURL(path string, metaonly bool) (*PackageFile, error) {
 	resp, err := http.Get(path)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	p, err := NewPackageFileReader(resp.Body).Read()
+	p, err := NewPackageFileReader(resp.Body).SetMetaonly(metaonly).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -77,9 +79,10 @@ func openPackageURL(path string) (*PackageFile, error) {
 
 // PackageFileReader object
 type PackageFileReader struct {
-	reader io.Reader
-	pkg    *PackageFile
-	arcnt  *ar.Reader
+	reader   io.Reader
+	pkg      *PackageFile
+	arcnt    *ar.Reader
+	metaonly bool
 }
 
 // PackageFileReader constructor
@@ -88,7 +91,13 @@ func NewPackageFileReader(reader io.Reader) *PackageFileReader {
 	pfr.reader = reader
 	pfr.pkg = NewPackageFile()
 	pfr.arcnt = ar.NewReader(pfr.reader)
+	pfr.metaonly = true
 
+	return pfr
+}
+
+func (pfr *PackageFileReader) SetMetaonly(metaonly bool) *PackageFileReader {
+	pfr.metaonly = metaonly
 	return pfr
 }
 
@@ -115,6 +124,22 @@ func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
 	}
 
 	return tar.NewReader(&trbuf)
+}
+
+// Read data file, extracting the meta-data about its contents
+func (pfr *PackageFileReader) processDataFile(header ar.Header) {
+	if pfr.metaonly {
+		return // Bail out, files were not requested
+	}
+
+	tarFile := pfr.decompressTar(header)
+	for {
+		hdr, err := tarFile.Next()
+		if err == io.EOF {
+			break
+		}
+		pfr.pkg.addFileContent(*hdr)
+	}
 }
 
 // Read control file, compressed with tar and gzip or xz
@@ -178,6 +203,8 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 		} else {
 			if header.Name == "control.tar.gz" || header.Name == "control.tar.xz" {
 				pfr.processControlFile(*header)
+			} else if header.Name == "data.tar.xz" || header.Name == "data.tar.gz" {
+				pfr.processDataFile(*header)
 			} else {
 				fmt.Println(">> AR (Reader) FILENAME:", header.Name)
 			}
@@ -275,6 +302,7 @@ type PackageFile struct {
 func NewPackageFile() *PackageFile {
 	pf := new(PackageFile)
 	pf.fileChecksums = make(map[string]string)
+	pf.files = make([]FileInfo, 0)
 	pf.control = NewControlFile()
 	pf.symbols = NewSymbolsFile()
 	pf.shlibs = NewSharedLibsFile()
@@ -334,6 +362,53 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 			c.fileChecksums[csF[0]] = csF[1]
 		}
 	}
+}
+
+// Add file content meta-data
+func (c *PackageFile) addFileContent(header tar.Header) {
+	info := new(FileInfo)
+	info.name = header.Name
+	info.mode = c.int64toFilemode(header.Mode)
+	info.size = header.Size
+	info.modTime = header.ModTime
+	info.owner = header.Uname
+	info.group = header.Gname
+	info.linkname = header.Linkname
+
+	c.files = append(c.files, *info)
+}
+
+// fileModeFromInt64 converts the 16 bit value returned from a typical
+// unix/linux stat call to the bitmask that go uses to produce an os
+// neutral representation.
+func (c *PackageFile) int64toFilemode(mode int64) os.FileMode {
+	fm := os.FileMode(mode & 0777)
+	switch mode & syscall.S_IFMT {
+	case syscall.S_IFBLK:
+		fm |= os.ModeDevice
+	case syscall.S_IFCHR:
+		fm |= os.ModeDevice | os.ModeCharDevice
+	case syscall.S_IFDIR:
+		fm |= os.ModeDir
+	case syscall.S_IFIFO:
+		fm |= os.ModeNamedPipe
+	case syscall.S_IFLNK:
+		fm |= os.ModeSymlink
+	case syscall.S_IFREG:
+		// nothing to do
+	case syscall.S_IFSOCK:
+		fm |= os.ModeSocket
+	}
+	if mode&syscall.S_ISGID != 0 {
+		fm |= os.ModeSetgid
+	}
+	if mode&syscall.S_ISUID != 0 {
+		fm |= os.ModeSetuid
+	}
+	if mode&syscall.S_ISVTX != 0 {
+		fm |= os.ModeSticky
+	}
+	return fm
 }
 
 // Parse Conffiles
@@ -447,4 +522,9 @@ func (c *PackageFile) TriggersFile() *TriggerFile {
 // ConffilesFile returns parsed triggers file data.
 func (c *PackageFile) ConffilesFile() *CfgFilesFile {
 	return c.conffiles
+}
+
+// Return meta-content of the package
+func (c *PackageFile) Files() []FileInfo {
+	return c.files
 }
