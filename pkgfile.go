@@ -131,6 +131,14 @@ func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
 	return tar.NewReader(&trbuf)
 }
 
+// Read _gpgbuiler file (self-signed Debian package with no role)
+func (pfr *PackageFileReader) processGpgBuilderFile(header ar.Header) {
+	var buff bytes.Buffer
+	_, err := io.Copy(&buff, pfr.arcnt)
+	pfr.checkErr(err)
+	pfr.pkg.gpgbuilder = strings.TrimSpace(buff.String())
+}
+
 // Read data file, extracting the meta-data about its contents
 func (pfr *PackageFileReader) processDataFile(header ar.Header) {
 	if pfr.metaonly {
@@ -217,6 +225,8 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 				pfr.processControlFile(*header)
 			} else if strings.HasPrefix(header.Name, "data.") {
 				pfr.processDataFile(*header)
+			} else if header.Name == "_gpgbuilder" {
+				pfr.processGpgBuilderFile(*header)
 			} else if header.Name == "debian-binary" {
 				pfr.processDebianBinaryFile(*header)
 			}
@@ -300,12 +310,13 @@ type PackageFile struct {
 	postinst string
 	postrm   string
 
-	checksum  *Checksum
-	control   *ControlFile
-	symbols   *SymbolsFile
-	shlibs    *SharedLibsFile
-	triggers  *TriggerFile
-	conffiles *CfgFilesFile
+	checksum   *Checksum
+	control    *ControlFile
+	symbols    *SymbolsFile
+	shlibs     *SharedLibsFile
+	triggers   *TriggerFile
+	conffiles  *CfgFilesFile
+	gpgbuilder string
 
 	files         []FileInfo
 	fileChecksums map[string]string
