@@ -367,7 +367,7 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 func (c *PackageFile) addFileContent(header tar.Header) {
 	info := new(FileInfo)
 	info.name = header.Name
-	info.mode = c.int64toFilemode(header.Mode)
+	info.mode = header.FileInfo().Mode()
 	info.size = header.Size
 	info.modTime = header.ModTime
 	info.owner = header.Uname
@@ -375,39 +375,6 @@ func (c *PackageFile) addFileContent(header tar.Header) {
 	info.linkname = header.Linkname
 
 	c.files = append(c.files, *info)
-}
-
-// fileModeFromInt64 converts the 16 bit value returned from a typical
-// unix/linux stat call to the bitmask that go uses to produce an os
-// neutral representation.
-func (c *PackageFile) int64toFilemode(mode int64) os.FileMode {
-	fm := os.FileMode(mode & 0777)
-	switch mode & syscall.S_IFMT {
-	case syscall.S_IFBLK:
-		fm |= os.ModeDevice
-	case syscall.S_IFCHR:
-		fm |= os.ModeDevice | os.ModeCharDevice
-	case syscall.S_IFDIR:
-		fm |= os.ModeDir
-	case syscall.S_IFIFO:
-		fm |= os.ModeNamedPipe
-	case syscall.S_IFLNK:
-		fm |= os.ModeSymlink
-	case syscall.S_IFREG:
-		// nothing to do
-	case syscall.S_IFSOCK:
-		fm |= os.ModeSocket
-	}
-	if mode&syscall.S_ISGID != 0 {
-		fm |= os.ModeSetgid
-	}
-	if mode&syscall.S_ISUID != 0 {
-		fm |= os.ModeSetuid
-	}
-	if mode&syscall.S_ISVTX != 0 {
-		fm |= os.ModeSticky
-	}
-	return fm
 }
 
 // Parse Conffiles
