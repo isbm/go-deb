@@ -182,8 +182,7 @@ func (pfr *PackageFileReader) processControlFile(header ar.Header) {
 			case "config":
 				// Old packaging style
 			default:
-				fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
-				fmt.Println(databuf.String())
+				// Log unhandled content and the name here
 			}
 		}
 	}
