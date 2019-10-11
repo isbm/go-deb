@@ -19,7 +19,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -142,6 +141,14 @@ func (pfr *PackageFileReader) processDataFile(header ar.Header) {
 	}
 }
 
+// Read versision of the package managaer
+func (pfr *PackageFileReader) processDebianBinaryFile(header ar.Header) {
+	var buff bytes.Buffer
+	_, err := io.Copy(&buff, pfr.arcnt)
+	pfr.checkErr(err)
+	pfr.pkg.debVersion = strings.TrimSpace(buff.String())
+}
+
 // Read control file, compressed with tar and gzip or xz
 func (pfr *PackageFileReader) processControlFile(header ar.Header) {
 	var databuf bytes.Buffer
@@ -206,6 +213,8 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 				pfr.processDataFile(*header)
 			} else {
 				fmt.Println(">> AR (Reader) FILENAME:", header.Name)
+			} else if header.Name == "debian-binary" {
+				pfr.processDebianBinaryFile(*header)
 			}
 		}
 	}
@@ -277,9 +286,10 @@ func (cs *Checksum) MD5() string {
 
 // PackageFile object
 type PackageFile struct {
-	path     string
-	fileSize uint64
-	fileTime time.Time
+	path       string
+	fileSize   uint64
+	fileTime   time.Time
+	debVersion string
 
 	preinst  string
 	prerm    string
@@ -493,4 +503,9 @@ func (c *PackageFile) ConffilesFile() *CfgFilesFile {
 // Return meta-content of the package
 func (c *PackageFile) Files() []FileInfo {
 	return c.files
+}
+
+// DpkgVersion returns the version of the format of the .deb file
+func (c *PackageFile) DebVersion() string {
+	return c.debVersion
 }
