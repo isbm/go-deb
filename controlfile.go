@@ -72,8 +72,8 @@ func (cf *ControlFile) setField(data ...string) error {
 	}
 	name, value := strings.ToLower(strings.TrimSpace(data[0])), strings.TrimSpace(data[1])
 	i, err := strconv.Atoi(value)
-	if strings.Contains(value, ",") || in(name, []string{
-		"depends", "predepends", "suggests", "breaks",
+	if strings.Contains(value, ",") && in(name, []string{
+		"depends", "predepends", "suggests", "breaks", "enhances",
 		"conflicts", "provides", "recommends", "replaces"}) {
 		cf.setFoldedField(name, value)
 	} else if err == nil {
