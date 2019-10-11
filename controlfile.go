@@ -72,8 +72,8 @@ func (cf *ControlFile) setField(data ...string) error {
 	}
 	name, value := strings.ToLower(strings.TrimSpace(data[0])), strings.TrimSpace(data[1])
 	i, err := strconv.Atoi(value)
-	if strings.Contains(value, ",") || in(name, []string{
-		"depends", "predepends", "suggests", "breaks",
+	if strings.Contains(value, ",") && in(name, []string{
+		"depends", "predepends", "suggests", "breaks", "enhances",
 		"conflicts", "provides", "recommends", "replaces"}) {
 		cf.setFoldedField(name, value)
 	} else if err == nil {
@@ -152,7 +152,7 @@ func (cf *ControlFile) setStringField(name string, data string) {
 	case "section":
 		cf.section = data
 	case "priority":
-		cf.section = data
+		cf.priority = data
 	case "original-maintainer":
 		cf.originalMaintainer = data
 	case "version":
@@ -207,6 +207,11 @@ func (cf *ControlFile) InstalledSize() int {
 //
 func (cf *ControlFile) Section() string {
 	return cf.section
+}
+
+//
+func (cf *ControlFile) Priority() string {
+	return cf.priority
 }
 
 //

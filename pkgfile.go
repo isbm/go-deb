@@ -4,14 +4,16 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/andrew-d/lzma"
 	"github.com/blakesmith/ar"
-	"github.com/ulikunitz/xz"
+	"github.com/xi2/xz"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -22,19 +24,20 @@ import (
 	"time"
 )
 
-func OpenPackageFile(uri string) (*PackageFile, error) {
+// OpenPackageFile from URI string.
+func OpenPackageFile(uri string, metaonly bool) (*PackageFile, error) {
 	var pf *PackageFile
 	var err error
 	if strings.Contains(uri, "://") && strings.HasPrefix(strings.ToLower(uri), "http") {
-		pf, err = openPackageURL(uri)
+		pf, err = openPackageURL(uri, metaonly)
 	} else {
-		pf, err = openPackagePath(uri)
+		pf, err = openPackagePath(uri, metaonly)
 	}
 
 	return pf, err
 }
 
-func openPackagePath(path string) (*PackageFile, error) {
+func openPackagePath(path string, metaonly bool) (*PackageFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -46,7 +49,7 @@ func openPackagePath(path string) (*PackageFile, error) {
 		return nil, err
 	}
 
-	p, err := ReadPackageFile(f)
+	p, err := NewPackageFileReader(f).SetMetaonly(metaonly).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -56,14 +59,14 @@ func openPackagePath(path string) (*PackageFile, error) {
 }
 
 // openPackageURL reads package info from a HTTP URL
-func openPackageURL(path string) (*PackageFile, error) {
+func openPackageURL(path string, metaonly bool) (*PackageFile, error) {
 	resp, err := http.Get(path)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	p, err := ReadPackageFile(resp.Body)
+	p, err := NewPackageFileReader(resp.Body).SetMetaonly(metaonly).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -75,12 +78,142 @@ func openPackageURL(path string) (*PackageFile, error) {
 	return p, nil
 }
 
-func ReadPackageFile(r io.Reader) (*PackageFile, error) {
-	p := NewPackageFile()
+// PackageFileReader object
+type PackageFileReader struct {
+	reader   io.Reader
+	pkg      *PackageFile
+	arcnt    *ar.Reader
+	metaonly bool
+}
 
-	arFile := ar.NewReader(r)
+// PackageFileReader constructor
+func NewPackageFileReader(reader io.Reader) *PackageFileReader {
+	pfr := new(PackageFileReader)
+	pfr.reader = reader
+	pfr.pkg = NewPackageFile()
+	pfr.arcnt = ar.NewReader(pfr.reader)
+	pfr.metaonly = true
+
+	return pfr
+}
+
+func (pfr *PackageFileReader) SetMetaonly(metaonly bool) *PackageFileReader {
+	pfr.metaonly = metaonly
+	return pfr
+}
+
+// Error checker
+func (pfr PackageFileReader) checkErr(err error) bool {
+	if err != nil {
+		panic(err) // Should be logging instead
+	}
+	return err == nil
+}
+
+// Decompress Tar data from gz or xz
+func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
+	var gzbuf bytes.Buffer
+	var trbuf bytes.Buffer
+
+	_, cperr := io.Copy(&gzbuf, pfr.arcnt)
+	pfr.checkErr(cperr)
+
+	if strings.HasSuffix(header.Name, ".gz") {
+		pfr.checkErr(pfr.pkg.unGzip(&trbuf, gzbuf.Bytes()))
+	} else if strings.HasSuffix(header.Name, ".xz") {
+		pfr.checkErr(pfr.pkg.unXz(&trbuf, gzbuf.Bytes()))
+	} else if strings.HasSuffix(header.Name, ".bz2") {
+		pfr.checkErr(pfr.pkg.unBzip(&trbuf, gzbuf.Bytes()))
+	} else if strings.HasSuffix(header.Name, ".lzma") {
+		pfr.checkErr(pfr.pkg.unLzma(&trbuf, gzbuf.Bytes()))
+	}
+
+	return tar.NewReader(&trbuf)
+}
+
+// Read _gpgbuiler file (self-signed Debian package with no role)
+func (pfr *PackageFileReader) processGpgBuilderFile(header ar.Header) {
+	var buff bytes.Buffer
+	_, err := io.Copy(&buff, pfr.arcnt)
+	pfr.checkErr(err)
+	pfr.pkg.gpgbuilder = strings.TrimSpace(buff.String())
+}
+
+// Read data file, extracting the meta-data about its contents
+func (pfr *PackageFileReader) processDataFile(header ar.Header) {
+	if pfr.metaonly {
+		return // Bail out, files were not requested
+	}
+
+	tarFile := pfr.decompressTar(header)
 	for {
-		header, err := arFile.Next()
+		hdr, err := tarFile.Next()
+		if err == io.EOF {
+			break
+		}
+		pfr.pkg.addFileContent(*hdr)
+	}
+}
+
+// Read versision of the package managaer
+func (pfr *PackageFileReader) processDebianBinaryFile(header ar.Header) {
+	var buff bytes.Buffer
+	_, err := io.Copy(&buff, pfr.arcnt)
+	pfr.checkErr(err)
+	pfr.pkg.debVersion = strings.TrimSpace(buff.String())
+}
+
+// Read control file, compressed with tar and gzip or xz
+func (pfr *PackageFileReader) processControlFile(header ar.Header) {
+	var databuf bytes.Buffer
+	tarFile := pfr.decompressTar(header)
+	for {
+		hdr, err := tarFile.Next()
+		if err == io.EOF {
+			break
+		}
+		if pfr.checkErr(err) && hdr.Typeflag == tar.TypeReg {
+			databuf.Reset()
+			_, err = io.Copy(&databuf, tarFile)
+			pfr.checkErr(err)
+
+			switch hdr.Name[2:] {
+			case "postinst":
+				pfr.pkg.postinst = databuf.String()
+			case "postrm":
+				pfr.pkg.postrm = databuf.String()
+			case "preinst":
+				pfr.pkg.preinst = databuf.String()
+			case "prerm":
+				pfr.pkg.prerm = databuf.String()
+			case "md5sums":
+				pfr.pkg.parseMd5Sums(databuf.Bytes())
+			case "control":
+				pfr.pkg.parseControlFile(databuf.Bytes())
+			case "symbols":
+				pfr.pkg.parseSymbolsFile(databuf.Bytes())
+			case "shlibs":
+				pfr.pkg.parseSharedLibsFile(databuf.Bytes())
+			case "triggers":
+				pfr.pkg.parseTriggersFile(databuf.Bytes())
+			case "conffiles":
+				pfr.pkg.parseConffilesFile(databuf.Bytes())
+			case "templates":
+				// If it is needed
+			case "config":
+				// Old packaging style
+			default:
+				// Log unhandled content and the name here
+			}
+		}
+	}
+
+}
+
+// Read Debian package data from the stream
+func (pfr *PackageFileReader) Read() (*PackageFile, error) {
+	for {
+		header, err := pfr.arcnt.Next()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -88,70 +221,19 @@ func ReadPackageFile(r io.Reader) (*PackageFile, error) {
 				panic(err)
 			}
 		} else {
-			if header.Name == "control.tar.gz" || header.Name == "control.tar.xz" {
-				var gzbuf bytes.Buffer
-				var trbuf bytes.Buffer
-
-				io.Copy(&gzbuf, arFile)
-
-				if strings.HasSuffix(header.Name, "gz") {
-					p.unGzip(&trbuf, gzbuf.Bytes())
-				} else {
-					p.unXz(&trbuf, gzbuf.Bytes())
-				}
-
-				tr := tar.NewReader(&trbuf)
-				for {
-					hdr, err := tr.Next()
-					if err == io.EOF {
-						break
-					}
-					if err != nil {
-						panic(err)
-					}
-					if hdr.Typeflag == tar.TypeReg {
-						gzbuf.Reset()
-						io.Copy(&gzbuf, tr)
-
-						switch hdr.Name[2:] {
-						case "postinst":
-							p.postinst = string(gzbuf.Bytes())
-						case "postrm":
-							p.postrm = string(gzbuf.Bytes())
-						case "preinst":
-							p.preinst = string(gzbuf.Bytes())
-						case "prerm":
-							p.prerm = string(gzbuf.Bytes())
-						case "md5sums":
-							p.parseMd5Sums(gzbuf.Bytes())
-						case "control":
-							p.parseControlFile(gzbuf.Bytes())
-						case "symbols":
-							p.parseSymbolsFile(gzbuf.Bytes())
-						case "shlibs":
-							p.parseSharedLibsFile(gzbuf.Bytes())
-						case "triggers":
-							p.parseTriggersFile(gzbuf.Bytes())
-						case "conffiles":
-							p.parseConffilesFile(gzbuf.Bytes())
-						case "templates":
-							// If it is needed
-						case "config":
-							// Old packaging style
-						default:
-							fmt.Printf("\n\n### UNHANDLED YET '%s':\n==========\n\n", hdr.Name[2:])
-							fmt.Println(string(gzbuf.Bytes()))
-						}
-					}
-				}
-
-			} else {
-				fmt.Println(">> AR FILENAME:", header.Name)
+			if strings.HasPrefix(header.Name, "control.") {
+				pfr.processControlFile(*header)
+			} else if strings.HasPrefix(header.Name, "data.") {
+				pfr.processDataFile(*header)
+			} else if header.Name == "_gpgbuilder" {
+				pfr.processGpgBuilderFile(*header)
+			} else if header.Name == "debian-binary" {
+				pfr.processDebianBinaryFile(*header)
 			}
 		}
 	}
 
-	return p, nil
+	return pfr.pkg, nil
 }
 
 // Checksum object computes and returns the SHA256, SHA1 and MD5 checksums
@@ -218,21 +300,23 @@ func (cs *Checksum) MD5() string {
 
 // PackageFile object
 type PackageFile struct {
-	path     string
-	fileSize uint64
-	fileTime time.Time
+	path       string
+	fileSize   uint64
+	fileTime   time.Time
+	debVersion string
 
 	preinst  string
 	prerm    string
 	postinst string
 	postrm   string
 
-	checksum  *Checksum
-	control   *ControlFile
-	symbols   *SymbolsFile
-	shlibs    *SharedLibsFile
-	triggers  *TriggerFile
-	conffiles *CfgFilesFile
+	checksum   *Checksum
+	control    *ControlFile
+	symbols    *SymbolsFile
+	shlibs     *SharedLibsFile
+	triggers   *TriggerFile
+	conffiles  *CfgFilesFile
+	gpgbuilder string
 
 	files         []FileInfo
 	fileChecksums map[string]string
@@ -242,6 +326,7 @@ type PackageFile struct {
 func NewPackageFile() *PackageFile {
 	pf := new(PackageFile)
 	pf.fileChecksums = make(map[string]string)
+	pf.files = make([]FileInfo, 0)
 	pf.control = NewControlFile()
 	pf.symbols = NewSymbolsFile()
 	pf.shlibs = NewSharedLibsFile()
@@ -259,9 +344,30 @@ func (c *PackageFile) setPath(path string) *PackageFile {
 	return c
 }
 
+// unBz2 decompresses Bzip data array
+func (c *PackageFile) unLzma(writer io.Writer, data []byte) error {
+	lzmaread := lzma.NewReader(bytes.NewBuffer(data))
+	defer lzmaread.Close()
+	data, err := ioutil.ReadAll(lzmaread)
+	if err == nil {
+		writer.Write(data)
+	}
+	return err
+}
+
+// unBz2 decompresses Bzip data array
+func (c *PackageFile) unBzip(writer io.Writer, data []byte) error {
+	bzread := bzip2.NewReader(bytes.NewBuffer(data))
+	data, err := ioutil.ReadAll(bzread)
+	if err == nil {
+		writer.Write(data)
+	}
+	return err
+}
+
 // unXz decompresses Lempel-Ziv-Markow data
 func (c *PackageFile) unXz(writer io.Writer, data []byte) error {
-	xzread, err := xz.NewReader(bytes.NewBuffer(data))
+	xzread, err := xz.NewReader(bytes.NewBuffer(data), 0)
 	if err != nil {
 		panic(err)
 	}
@@ -301,6 +407,20 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 			c.fileChecksums[csF[0]] = csF[1]
 		}
 	}
+}
+
+// Add file content meta-data
+func (c *PackageFile) addFileContent(header tar.Header) {
+	info := new(FileInfo)
+	info.name = header.Name
+	info.mode = header.FileInfo().Mode()
+	info.size = header.Size
+	info.modTime = header.ModTime
+	info.owner = header.Uname
+	info.group = header.Gname
+	info.linkname = header.Linkname
+
+	c.files = append(c.files, *info)
 }
 
 // Parse Conffiles
@@ -414,4 +534,14 @@ func (c *PackageFile) TriggersFile() *TriggerFile {
 // ConffilesFile returns parsed triggers file data.
 func (c *PackageFile) ConffilesFile() *CfgFilesFile {
 	return c.conffiles
+}
+
+// Return meta-content of the package
+func (c *PackageFile) Files() []FileInfo {
+	return c.files
+}
+
+// DpkgVersion returns the version of the format of the .deb file
+func (c *PackageFile) DebVersion() string {
+	return c.debVersion
 }
