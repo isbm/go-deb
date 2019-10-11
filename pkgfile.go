@@ -4,12 +4,14 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/andrew-d/lzma"
 	"github.com/blakesmith/ar"
 	"github.com/xi2/xz"
 	"hash"
@@ -116,10 +118,14 @@ func (pfr *PackageFileReader) decompressTar(header ar.Header) *tar.Reader {
 	_, cperr := io.Copy(&gzbuf, pfr.arcnt)
 	pfr.checkErr(cperr)
 
-	if strings.HasSuffix(header.Name, "gz") {
+	if strings.HasSuffix(header.Name, ".gz") {
 		pfr.checkErr(pfr.pkg.unGzip(&trbuf, gzbuf.Bytes()))
-	} else {
+	} else if strings.HasSuffix(header.Name, ".xz") {
 		pfr.checkErr(pfr.pkg.unXz(&trbuf, gzbuf.Bytes()))
+	} else if strings.HasSuffix(header.Name, ".bz2") {
+		pfr.checkErr(pfr.pkg.unBzip(&trbuf, gzbuf.Bytes()))
+	} else if strings.HasSuffix(header.Name, ".lzma") {
+		pfr.checkErr(pfr.pkg.unLzma(&trbuf, gzbuf.Bytes()))
 	}
 
 	return tar.NewReader(&trbuf)
@@ -207,12 +213,10 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 				panic(err)
 			}
 		} else {
-			if header.Name == "control.tar.gz" || header.Name == "control.tar.xz" {
+			if strings.HasPrefix(header.Name, "control.") {
 				pfr.processControlFile(*header)
-			} else if header.Name == "data.tar.xz" || header.Name == "data.tar.gz" {
+			} else if strings.HasPrefix(header.Name, "data.") {
 				pfr.processDataFile(*header)
-			} else {
-				fmt.Println(">> AR (Reader) FILENAME:", header.Name)
 			} else if header.Name == "debian-binary" {
 				pfr.processDebianBinaryFile(*header)
 			}
@@ -327,6 +331,27 @@ func (c *PackageFile) setPath(path string) *PackageFile {
 	c.checksum = NewChecksum(c.path)
 
 	return c
+}
+
+// unBz2 decompresses Bzip data array
+func (c *PackageFile) unLzma(writer io.Writer, data []byte) error {
+	lzmaread := lzma.NewReader(bytes.NewBuffer(data))
+	defer lzmaread.Close()
+	data, err := ioutil.ReadAll(lzmaread)
+	if err == nil {
+		writer.Write(data)
+	}
+	return err
+}
+
+// unBz2 decompresses Bzip data array
+func (c *PackageFile) unBzip(writer io.Writer, data []byte) error {
+	bzread := bzip2.NewReader(bytes.NewBuffer(data))
+	data, err := ioutil.ReadAll(bzread)
+	if err == nil {
+		writer.Write(data)
+	}
+	return err
 }
 
 // unXz decompresses Lempel-Ziv-Markow data
