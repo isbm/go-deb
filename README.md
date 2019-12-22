@@ -26,7 +26,7 @@ import (
 )
 
 func main() {
-	p, err := rpm.OpenPackageFile("golang_1.12~1_amd64.deb")
+	p, err := deb.OpenPackageFile("golang_1.12~1_amd64.deb")
 	if err != nil {
 		panic(err)
 	}
