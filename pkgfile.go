@@ -11,17 +11,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/andrew-d/lzma"
-	"github.com/blakesmith/ar"
-	"github.com/xi2/xz"
 	"hash"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/andrew-d/lzma"
+	"github.com/blakesmith/ar"
+	"github.com/xi2/xz"
 )
 
 // OpenPackageFile from URI string.
