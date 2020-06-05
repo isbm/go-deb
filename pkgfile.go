@@ -223,6 +223,9 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 				panic(err)
 			}
 		} else {
+			// Yocto's IPK has trailing path for some weird reasons (same format tho)
+			header.Name = path.Base(strings.ReplaceAll(header.Name, "/", ""))
+
 			if strings.HasPrefix(header.Name, "control.") {
 				pfr.processControlFile(*header)
 			} else if strings.HasPrefix(header.Name, "data.") {
