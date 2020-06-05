@@ -16,6 +16,8 @@ type ControlFile struct {
 	arch          string
 	maintainer    string
 	homepage      string
+	licence       string
+	oe            string
 	installedSize int
 
 	// Canonical names of control file fields that are folded fields.
@@ -167,6 +169,10 @@ func (cf *ControlFile) setStringField(name string, data string) {
 		cf.description = data
 	case "homepage":
 		cf.homepage = data
+	case "license": // american spelling
+		cf.licence = data
+	case "oe":
+		cf.oe = data
 	default:
 		fmt.Println("Field", name, "is not yet supported:")
 		fmt.Println(data)
@@ -222,6 +228,16 @@ func (cf *ControlFile) MultiArch() string {
 //
 func (cf *ControlFile) Description() string {
 	return cf.description
+}
+
+// Licence of the package
+func (cf *ControlFile) Licence() string {
+	return cf.licence
+}
+
+//
+func (cf *ControlFile) OE() string {
+	return cf.oe
 }
 
 // Summary returns a first line of Description
