@@ -355,7 +355,7 @@ func (c *PackageFile) unLzma(writer io.Writer, data []byte) error {
 	defer lzmaread.Close()
 	data, err := ioutil.ReadAll(lzmaread)
 	if err == nil {
-		writer.Write(data)
+		_, err = writer.Write(data)
 	}
 	return err
 }
@@ -365,7 +365,7 @@ func (c *PackageFile) unBzip(writer io.Writer, data []byte) error {
 	bzread := bzip2.NewReader(bytes.NewBuffer(data))
 	data, err := ioutil.ReadAll(bzread)
 	if err == nil {
-		writer.Write(data)
+		_, err = writer.Write(data)
 	}
 	return err
 }
@@ -379,7 +379,7 @@ func (c *PackageFile) unXz(writer io.Writer, data []byte) error {
 
 	data, err = ioutil.ReadAll(xzread)
 	if err == nil {
-		writer.Write(data)
+		_, err = writer.Write(data)
 	}
 
 	return err
