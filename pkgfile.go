@@ -26,20 +26,47 @@ import (
 	"github.com/xi2/xz"
 )
 
+const (
+	HASH_MD5 = iota
+	HASH_SHA1
+	HASH_SHA256
+)
+
+type PackageOptions struct {
+	// Do not process actual files in "data" archive, only read the headers.
+	// This is useful for quick scans.
+	MetaOnly bool
+
+	// Set a hash type, one of HASH_MD5, HASH_SHA1 or HASH_SHA256.
+	// Default is HASH_MD5
+	Hash int
+
+	// Recalculate checksums, because dpkg is quite lousy here.
+	// Usually it is a very good idea to do so, but not needed if the package
+	// information is not intended to be used for system verification.
+	RecalculateChecksums bool
+}
+
+var DefaultPackageOptions = &PackageOptions{
+	MetaOnly:             false,
+	Hash:                 HASH_MD5,
+	RecalculateChecksums: true,
+}
+
 // OpenPackageFile from URI string.
-func OpenPackageFile(uri string, metaonly bool) (*PackageFile, error) {
+func OpenPackageFile(uri string, opts *PackageOptions) (*PackageFile, error) {
 	var pf *PackageFile
 	var err error
 	if strings.Contains(uri, "://") && strings.HasPrefix(strings.ToLower(uri), "http") {
-		pf, err = openPackageURL(uri, metaonly)
+		pf, err = openPackageURL(uri, opts)
 	} else {
-		pf, err = openPackagePath(uri, metaonly)
+		pf, err = openPackagePath(uri, opts)
 	}
 
 	return pf, err
 }
 
-func openPackagePath(path string, metaonly bool) (*PackageFile, error) {
+func openPackagePath(path string, opts *PackageOptions) (*PackageFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -51,7 +78,7 @@ func openPackagePath(path string, metaonly bool) (*PackageFile, error) {
 		return nil, err
 	}
 
-	p, err := NewPackageFileReader(f).SetMetaonly(metaonly).Read()
+	p, err := NewPackageFileReader(f).SetMetaonly(opts.MetaOnly).SetHash(opts.Hash).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -61,14 +88,14 @@ func openPackagePath(path string, metaonly bool) (*PackageFile, error) {
 }
 
 // openPackageURL reads package info from a HTTP URL
-func openPackageURL(path string, metaonly bool) (*PackageFile, error) {
+func openPackageURL(path string, opts *PackageOptions) (*PackageFile, error) {
 	resp, err := http.Get(path)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	p, err := NewPackageFileReader(resp.Body).SetMetaonly(metaonly).Read()
+	p, err := NewPackageFileReader(resp.Body).SetMetaonly(opts.MetaOnly).SetHash(opts.Hash).Read()
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +113,7 @@ type PackageFileReader struct {
 	pkg      *PackageFile
 	arcnt    *ar.Reader
 	metaonly bool
+	hash     int
 }
 
 // PackageFileReader constructor
@@ -101,6 +129,12 @@ func NewPackageFileReader(reader io.Reader) *PackageFileReader {
 
 func (pfr *PackageFileReader) SetMetaonly(metaonly bool) *PackageFileReader {
 	pfr.metaonly = metaonly
+	return pfr
+}
+
+// SetHash of the pre-calculated checksum
+func (pfr *PackageFileReader) SetHash(hash int) *PackageFileReader {
+	pfr.hash = hash
 	return pfr
 }
 
@@ -147,13 +181,23 @@ func (pfr *PackageFileReader) processDataFile(header ar.Header) {
 		return // Bail out, files were not requested
 	}
 
+	var databuf bytes.Buffer
 	tarFile := pfr.decompressTar(header)
 	for {
 		hdr, err := tarFile.Next()
 		if err == io.EOF {
 			break
 		}
-		pfr.pkg.addFileContent(*hdr)
+
+		pfr.pkg.addFileInfo(*hdr)
+
+		// Calculate checksum of a content payload file
+		if hdr.Typeflag == tar.TypeReg {
+			databuf.Reset()
+			_, err = io.Copy(&databuf, tarFile)
+			pfr.checkErr(err)
+			pfr.pkg.SetCalculatedChecksum(hdr.Name, NewBytesChecksum(databuf.Bytes()).SetHash(pfr.hash).Sum())
+		}
 	}
 }
 
@@ -247,7 +291,9 @@ func (pfr *PackageFileReader) Read() (*PackageFile, error) {
 // Checksum reopens the package using the file path that was given via
 // OpenPackageFile.
 type Checksum struct {
-	path string
+	path    string
+	payload []byte
+	hash    int
 }
 
 // Constructor
@@ -257,20 +303,41 @@ func NewChecksum(path string) *Checksum {
 	return cs
 }
 
+func NewBytesChecksum(data []byte) *Checksum {
+	cs := new(Checksum)
+	cs.payload = data
+	return cs
+}
+
+func (cs *Checksum) SetHash(hash int) *Checksum {
+	switch hash {
+	case HASH_MD5, HASH_SHA1, HASH_SHA256:
+		cs.hash = hash
+	default:
+		panic(fmt.Sprintf("Unknown hash: %d", hash))
+	}
+	return cs
+}
+
 // Compute checksum for the given hash
 func (cs *Checksum) compute(csType hash.Hash) (string, error) {
-	if cs.path == "" {
-		return "", fmt.Errorf("No path has been defined")
-	}
+	if cs.payload != nil {
+		if _, err := io.Copy(csType, bytes.NewReader(cs.payload)); err != nil {
+			return "", err
+		}
+	} else {
+		if cs.path == "" {
+			return "", fmt.Errorf("No path has been defined")
+		}
+		f, err := os.Open(cs.path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
 
-	f, err := os.Open(cs.path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	if _, err := io.Copy(csType, f); err != nil {
-		return "", err
+		if _, err := io.Copy(csType, f); err != nil {
+			return "", err
+		}
 	}
 
 	return hex.EncodeToString(csType.Sum(nil)), nil
@@ -303,6 +370,18 @@ func (cs *Checksum) MD5() string {
 	return sum
 }
 
+func (cs *Checksum) Sum() string {
+	switch cs.hash {
+	case HASH_MD5:
+		return cs.MD5()
+	case HASH_SHA1:
+		return cs.SHA1()
+	case HASH_SHA256:
+		return cs.SHA256()
+	}
+	return cs.MD5()
+}
+
 // PackageFile object
 type PackageFile struct {
 	path       string
@@ -323,14 +402,16 @@ type PackageFile struct {
 	conffiles  *CfgFilesFile
 	gpgbuilder string
 
-	files         []FileInfo
-	fileChecksums map[string]string
+	files                   []FileInfo
+	fileMd5Checksums        map[string]string
+	fileCalculatedChecksums map[string]string
 }
 
 // Constructor
 func NewPackageFile() *PackageFile {
 	pf := new(PackageFile)
-	pf.fileChecksums = make(map[string]string)
+	pf.fileMd5Checksums = make(map[string]string)    // Original dpkg's md5sums. They are always missing configs.
+	pf.fileCalculatedChecksums = map[string]string{} // SHA calculated checksums. Parsing package is slower, if this is on.
 	pf.files = make([]FileInfo, 0)
 	pf.control = NewControlFile()
 	pf.symbols = NewSymbolsFile()
@@ -409,13 +490,13 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 	for scn.Scan() {
 		csF := strings.Split(sfx.ReplaceAllString(scn.Text(), " "), " ")
 		if len(csF) == 2 && len(csF[0]) == 0x20 {
-			c.fileChecksums[csF[1]] = csF[0] // file to checksum
+			c.fileMd5Checksums[csF[1]] = csF[0] // file to checksum
 		}
 	}
 }
 
 // Add file content meta-data
-func (c *PackageFile) addFileContent(header tar.Header) {
+func (c *PackageFile) addFileInfo(header tar.Header) {
 	info := new(FileInfo)
 	info.name = header.Name
 	info.mode = header.FileInfo().Mode()
@@ -506,12 +587,15 @@ func (c *PackageFile) PostUninstallScript() string {
 	return c.postrm
 }
 
+// GetFileMd5Sums returns file checksum by relative path from the md5sums file.
+// NOTE: md5sums file omits configuration files.
+func (c *PackageFile) GetFileMd5Sums(path string) string {
+	return c.fileMd5Checksums[strings.TrimPrefix(path, "./")]
+}
+
 // GetFileChecksum returns file checksum by relative path
 func (c *PackageFile) GetFileChecksum(path string) string {
-	// Clean the prefix. The "path" is coming from AR as "./something/foo"
-	// while md5sums files are relative (?) as "something/foo".
-
-	return c.fileChecksums[strings.TrimPrefix(path, "./")]
+	return c.fileCalculatedChecksums[path]
 }
 
 // GetPackageChecksum returns checksum of the package itself
@@ -552,4 +636,20 @@ func (c *PackageFile) Files() []FileInfo {
 // DpkgVersion returns the version of the format of the .deb file
 func (c *PackageFile) DebVersion() string {
 	return c.debVersion
+}
+
+// SetCalculatedChecksum sets pre-calculated checksum out of the package directly.
+// Dpkg has only md5sums and often these are neglected or incorrect (e.g. no configuration files).
+// Sometimes md5sums is not even shipped (rare cases). In this case there is no way to
+// get all the information out of a .deb package into a some sort of database and then later on
+// find out if a particular file has been changed on the disk.
+func (c *PackageFile) SetCalculatedChecksum(path, sum string) *PackageFile {
+	if sum != "" {
+		c.fileCalculatedChecksums[path] = sum
+	}
+	return c
+}
+
+func (c *PackageFile) GetCalculatedChecksum(path string) string {
+	return c.fileCalculatedChecksums[path]
 }
