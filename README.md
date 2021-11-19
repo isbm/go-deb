@@ -26,7 +26,14 @@ import (
 )
 
 func main() {
-	p, err := deb.OpenPackageFile("golang_1.12~1_amd64.deb")
+	// Set options manually or use deb.DefaultPackageOptions instance
+	options := &deb.PackageOptions{
+		Hash: deb.HASH_SHA1,
+		RecalculateChecksums: true,
+		MetaOnly: false,
+	}
+
+	p, err := deb.OpenPackageFile("golang_1.12~1_amd64.deb", options)
 	if err != nil {
 		panic(err)
 	}
