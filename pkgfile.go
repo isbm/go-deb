@@ -409,7 +409,7 @@ func (c *PackageFile) parseMd5Sums(data []byte) {
 	for scn.Scan() {
 		csF := strings.Split(sfx.ReplaceAllString(scn.Text(), " "), " ")
 		if len(csF) == 2 && len(csF[0]) == 0x20 {
-			c.fileChecksums[csF[0]] = csF[1]
+			c.fileChecksums[csF[1]] = csF[0] // file to checksum
 		}
 	}
 }
