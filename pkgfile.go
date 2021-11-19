@@ -508,7 +508,10 @@ func (c *PackageFile) PostUninstallScript() string {
 
 // GetFileChecksum returns file checksum by relative path
 func (c *PackageFile) GetFileChecksum(path string) string {
-	return c.fileChecksums[path]
+	// Clean the prefix. The "path" is coming from AR as "./something/foo"
+	// while md5sums files are relative (?) as "something/foo".
+
+	return c.fileChecksums[strings.TrimPrefix(path, "./")]
 }
 
 // GetPackageChecksum returns checksum of the package itself
